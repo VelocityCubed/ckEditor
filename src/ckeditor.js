@@ -59,6 +59,7 @@ import Collection from "@ckeditor/ckeditor5-utils/src/collection";
 import Model from "@ckeditor/ckeditor5-ui/src/model";
 import Indent from "@ckeditor/ckeditor5-indent/src/indent.js";
 import IndentBlock from "@ckeditor/ckeditor5-indent/src/indentblock.js";
+import ButtonView from "@ckeditor/ckeditor5-ui/src/button/buttonview";
 
 class FontFamilyDropdown extends Plugin {
   init() {
@@ -98,64 +99,6 @@ class FontSizeDropdown extends Plugin {
     });
   }
 }
-
-// class CustomHeadingDropdown extends Plugin {
-//   init() {
-//     this.editor.ui.componentFactory.add("customHeadingDropdown", () => {
-//       const editor = this.editor;
-//       const command = editor.commands.get("heading");
-//       const dropdownView = editor.ui.componentFactory.create("heading");
-//       const headingOptions = editor.config.get("heading.options");
-
-//       const customHeader = {
-//         model: "customHeader",
-//         view: {
-//           name: "h1",
-//           classes: ["customHeader"],
-//         },
-//         title: "Header",
-//         class: "customHeader",
-//       };
-
-//       const customBody = {
-//         model: "customBody",
-//         view: {
-//           name: "p",
-//           classes: ["customBody"],
-//         },
-//         title: "Body",
-//         class: "customBody",
-//       };
-
-//       headingOptions.add(customHeader);
-//       headingOptions.add(customBody);
-
-//       headingOptions
-//         .add()(headingOptions && headingOptions.map((editor) => editor.model))
-//         .forEach((editor) => {
-//           editor.model.schema.isRegistered(editor) &&
-//             editor.model.schema.extend(editor, {
-//               allowAttributes: "blockIndent",
-//             });
-//         }),
-//         editor.model.schema.setAttributeProperties("blockIndent", {
-//           isFormatting: !0,
-//         }),
-//         editor.commands
-//           .get("indent")
-//           .registerChildCommand(editor.commands.get("indentBlock")),
-//         editor.commands
-//           .get("outdent")
-//           .registerChildCommand(editor.commands.get("outdentBlock"));
-
-//       dropdownView.buttonView.bind("label").to(command, "value", (value) => {
-//         return value ? value : t("Default");
-//       });
-
-//       return dropdownView;
-//     });
-//   }
-// }
 
 class Placeholder extends Plugin {
   static get requires() {
@@ -262,8 +205,6 @@ class PlaceholderEditing extends Plugin {
   }
 
   init() {
-    console.log("PlaceholderEditing#init() got called");
-
     this._defineSchema();
     this._defineConverters();
 
@@ -356,6 +297,179 @@ class PlaceholderEditing extends Plugin {
   }
 }
 
+class OverwriteLanguageDirection extends Plugin {
+  static get requires() {
+    return [OverwriteLanguageDirectionEditing, OverwriteLanguageDirectionUI];
+  }
+}
+
+class OverwriteLanguageDirectionCommand extends Command {
+  execute({ value }) {
+    const editor = this.editor;
+    let selection = editor.model.document.selection;
+    let range = selection.getFirstRange();
+    let originalText = "";
+
+    editor.model.change((writer) => {
+      for (const item of range.getItems()) {
+        originalText = item.data;
+      }
+
+      const ignoreDirection = writer.createElement("ignoreDirection", {
+        ...Object.fromEntries(selection.getAttributes()),
+        name: value,
+        textVal: originalText
+      });
+
+      editor.model.insertContent(ignoreDirection);
+
+      writer.setSelection(ignoreDirection, "on");
+    });
+  }
+
+  refresh() {
+    const model = this.editor.model;
+    const selection = model.document.selection;
+
+    const isAllowed = model.schema.checkChild(
+      selection.focus.parent,
+      "ignoreDirection"
+    );
+
+    this.isEnabled = isAllowed;
+  }
+}
+
+class OverwriteLanguageDirectionUI extends Plugin {
+  init() {
+    const editor = this.editor;
+    const t = editor.t;
+
+    // The "ignoreDirection" dropdown must be registered among the UI components of the editor
+    // to be displayed in the toolbar.
+    editor.ui.componentFactory.add("ignoreDirection", (locale) => {
+      const button = new ButtonView(locale);
+
+      button.set({
+        label: t("Apply Left-to-Right"),
+        tooltip: true,
+        withText: true,
+      })
+
+      // Disable the ignoreDirection button when the command is disabled.
+      const command = editor.commands.get("ignoreDirection");
+      button.bind("isEnabled").to(command);
+
+      // Execute the command when the dropdown item is clicked (executed).
+      this.listenTo(button, "execute", (evt) => {
+        editor.execute("ignoreDirection", { value: evt.source.commandParam });
+        editor.editing.view.focus();
+      });
+
+      return button;
+    });
+  }
+}
+
+class OverwriteLanguageDirectionEditing extends Plugin {
+  static get requires() {
+    return [Widget];
+  }
+
+  init() {
+    this._defineSchema();
+    this._defineConverters();
+
+    this.editor.commands.add(
+      "ignoreDirection",
+      new OverwriteLanguageDirectionCommand(this.editor)
+    );
+
+    this.editor.editing.mapper.on(
+      "viewToModelPosition",
+      viewToModelPositionOutsideModelElement(this.editor.model, (viewElement) =>
+        viewElement.hasClass("ignoreDirection")
+      )
+    );
+  }
+
+  _defineSchema() {
+    const schema = this.editor.model.schema;
+
+    schema.register("ignoreDirection", {
+      // Allow wherever text is allowed:
+      allowWhere: "$text",
+
+      // The ignoreDirection will act as an inline node:
+      isInline: true,
+
+      // The inline widget is self-contained so it cannot be split by the caret and it can be selected:
+      isObject: true,
+
+      // The inline widget can have the same attributes as text (for example linkHref, bold).
+      allowAttributesOf: "$text",
+
+      // The ignoreDirection can have many types, like date, name, surname, etc:
+      allowAttributes: ["name", "textVal"],
+    });
+  }
+
+  _defineConverters() {
+    const conversion = this.editor.conversion;
+
+    conversion.for("upcast").elementToElement({
+      view: {
+        name: "span",
+        classes: ["ignoreDirection"],
+      },
+      model: (viewElement, { writer: modelWriter }) => {
+        // Extract the "name" from "{name}".
+        const textVal = viewElement.getChild(0).data;
+        const name = "Apply Left-to-Right"
+        return modelWriter.createElement("ignoreDirection", { name, textVal });
+      },
+    });
+
+    conversion.for("editingDowncast").elementToElement({
+      model: "ignoreDirection",
+      view: (modelItem, { writer: viewWriter }) => {
+        const widgetElement = createIgnoreDirectionView(
+          modelItem,
+          viewWriter
+        );
+
+        // Enable widget handling on a ignoreDirection element inside the editing view.
+        return toWidget(widgetElement, viewWriter);
+      },
+    });
+
+    conversion.for("dataDowncast").elementToElement({
+      model: "ignoreDirection",
+      view: (modelItem, { writer: viewWriter }) =>
+        createIgnoreDirectionView(modelItem, viewWriter),
+    });
+
+    // Helper method for both downcast converters.
+    function createIgnoreDirectionView(modelItem, viewWriter) {
+      const name = modelItem.getAttribute("name");
+      const textVal = modelItem.getAttribute("textVal");
+
+      const ignoreDirectionView = viewWriter.createContainerElement("span", {
+        class: "ignoreDirection",
+        dir: "ltr"
+      });
+
+      const innerText = viewWriter.createText(textVal);
+      viewWriter.insert(
+        viewWriter.createPositionAt(ignoreDirectionView, 0),
+        innerText
+      );
+
+      return ignoreDirectionView;
+    }
+  }
+}
+
 class Editor extends InlineEditor {}
 
 // Plugins to include in the build.
@@ -382,6 +496,7 @@ Editor.builtinPlugins = [
   List,
   MediaEmbed,
   MediaEmbedToolbar,
+  OverwriteLanguageDirection,
   Paragraph,
   PasteFromOffice,
   Placeholder,
@@ -445,6 +560,7 @@ Editor.defaultConfig = {
       "strikethrough",
       "alignment",
       "placeholder",
+      "ignoreDirection",
     ],
   },
   language: "en",
@@ -459,17 +575,17 @@ Editor.defaultConfig = {
   },
   heading: {
     options: [
-			{
-				model: 'heading1',
-				view: 'h2',
-				title: 'Heading',
-				class: 'ck-heading_heading1'
-			},
-			{
-				model: 'paragraph',
-				title: 'Body',
-				class: 'ck-heading_paragraph'
-			}
+      {
+        model: "heading1",
+        view: "h2",
+        title: "Heading",
+        class: "ck-heading_heading1",
+      },
+      {
+        model: "paragraph",
+        title: "Body",
+        class: "ck-heading_paragraph",
+      },
     ],
   },
 };
